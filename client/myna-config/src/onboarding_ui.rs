@@ -17,9 +17,6 @@ use libadwaita as adw;
 use libadwaita::prelude::*;
 
 use crate::active_backend::{ensure_backend_active, Settled, SetupError, SetupStage, SnapdWait};
-use crate::adapters::snap_backend::SnapBackendRepository;
-use crate::adapters::snapd_client::UnixSocketSnapdClient;
-use crate::adapters::system_configurator::PkexecSystemConfigurator;
 use crate::command::{CancellationToken, GioCommandRunner};
 use crate::domain::BackendSurfaceError;
 use crate::onboarding::{
@@ -132,15 +129,13 @@ pub struct OnboardingUi {
 impl OnboardingUi {
     /// Build and present the wizard against the real snapd and snap ports.
     pub fn present(application: &adw::Application, initial: Vec<Component>) -> Rc<Self> {
-        let runner = Arc::new(GioCommandRunner);
+        let (repository, configurator) =
+            crate::adapters::packaged::host_ports(Arc::new(GioCommandRunner));
         Self::present_with_ports(
             application,
             initial,
-            Rc::new(SnapBackendRepository::new(
-                runner.clone(),
-                Arc::new(UnixSocketSnapdClient::new()),
-            )),
-            Rc::new(PkexecSystemConfigurator::new(runner)),
+            repository,
+            configurator,
             crate::platform::Platform::current().components(),
             open_settings(),
             || myna_core::locale::preferred_languages(&myna_core::locale::SystemLocale::default()),
