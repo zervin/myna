@@ -1118,11 +1118,20 @@ mod tests {
         let (form, field) = url
             .split_once("&diagnostics=")
             .expect("a diagnostics field");
-        assert_eq!(
-            form,
-            "https://github.com/canonical/myna/issues/new?template=report.yml"
-        );
+        assert_eq!(form, ISSUE_FORM);
         form_decode(field)
+    }
+
+    /// Upstream's own form unless a redistributor's build names its own.
+    #[test]
+    fn the_issue_form_is_upstream_unless_the_build_names_another() {
+        match option_env!("MYNA_ISSUE_URL") {
+            Some(url) => assert_eq!(ISSUE_FORM, url),
+            None => assert_eq!(
+                ISSUE_FORM,
+                "https://github.com/canonical/myna/issues/new?template=report.yml"
+            ),
+        }
     }
 
     #[test]
