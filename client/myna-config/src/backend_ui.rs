@@ -18,8 +18,7 @@ use libadwaita::prelude::*;
 use crate::active_backend::{
     execute_switch, ActiveBackendController, PrepareSwitchError, SwitchNotice, SwitchOutcome,
 };
-use crate::adapters::snap_backend::SnapBackendRepository;
-use crate::adapters::snapd_client::UnixSocketSnapdClient;
+#[cfg(test)]
 use crate::adapters::system_configurator::PkexecSystemConfigurator;
 use crate::backend_apply::{
     execute_backend_apply, prepare_change, ApplyFailure, ApplyPreview, ApplySuccess,
@@ -561,12 +560,8 @@ impl BackendUi {
         general_settings: Option<GeneralSettings>,
         diagnostics_page: adw::NavigationPage,
     ) -> Rc<Self> {
-        let repository: Rc<dyn BackendRepository> = Rc::new(SnapBackendRepository::new(
-            Arc::new(GioCommandRunner),
-            Arc::new(UnixSocketSnapdClient::new()),
-        ));
-        let configurator: Rc<dyn SystemConfigurator> =
-            Rc::new(PkexecSystemConfigurator::new(Arc::new(GioCommandRunner)));
+        let (repository, configurator) =
+            crate::adapters::packaged::host_ports(Arc::new(GioCommandRunner));
         let ui = Self::install_with_ports(
             repository,
             configurator,
@@ -804,9 +799,15 @@ impl BackendUi {
         let recommended = recommendation.and_then(|found| found.installed);
         let ordered = recommended_first(snapshot.backends(), recommended);
         let backends = ordered.as_slice();
+        let installs = self.configurator.installs_models();
         page.install_button()
-            .set_visible(!installable_families(backends, None).is_empty());
-        self.show_install_hint(page, recommendation.and_then(|found| found.better));
+            .set_visible(installs && !installable_families(backends, None).is_empty());
+        self.show_install_hint(
+            page,
+            recommendation
+                .and_then(|found| found.better)
+                .filter(|_| installs),
+        );
         let selectable = backends.len() > 1
             || !matches!(snapshot.active_state(), ActiveBackendState::Connected(_));
         let (listed, listed_selectable) = {

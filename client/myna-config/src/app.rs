@@ -1411,13 +1411,12 @@ fn build_window(application: &adw::Application) {
     // no window and no held use count quits the moment `activate` returns.
     let hold = application.hold();
     glib::spawn_future_local(async move {
-        let runner = std::sync::Arc::new(crate::command::GioCommandRunner);
+        let (repository, configurator) = crate::adapters::packaged::host_ports(
+            std::sync::Arc::new(crate::command::GioCommandRunner),
+        );
         let components = crate::onboarding_ui::assess_machine(
-            &crate::adapters::snap_backend::SnapBackendRepository::new(
-                runner.clone(),
-                std::sync::Arc::new(crate::adapters::snapd_client::UnixSocketSnapdClient::new()),
-            ),
-            &crate::adapters::system_configurator::PkexecSystemConfigurator::new(runner),
+            repository.as_ref(),
+            configurator.as_ref(),
             crate::platform::Platform::current().components().as_ref(),
         )
         .await;

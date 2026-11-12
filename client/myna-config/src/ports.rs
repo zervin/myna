@@ -63,6 +63,12 @@ pub trait SystemConfigurator {
         cancellation: CancellationToken,
     ) -> Result<Vec<CommandResult>, SystemConfiguratorFailure>;
 
+    /// Whether this host installs models from Settings. A packaged install
+    /// leaves that to the package manager, so Install more models hides.
+    fn installs_models(&self) -> bool {
+        true
+    }
+
     /// Restart Myna's user service so it picks up a changed backend mount.
     async fn restart_myna(
         &self,
