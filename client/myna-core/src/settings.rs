@@ -12,7 +12,10 @@
 //! editable, captured by `snap save`, removed with the snap; `myna.config`
 //! (glib's own `gsettings` behind a wrapper) is the packaged way in.
 //! Unpackaged, the dev launch paths export the same pair, so the store is
-//! `~/.config/glib-2.0/settings/keyfile` - one store shape everywhere. Live
+//! `~/.config/glib-2.0/settings/keyfile` - one store shape everywhere. A
+//! distribution package build (`MYNA_PACKAGING=deb`) has no snap directory to
+//! share, so it keeps `~/.config/myna/glib-2.0/settings/keyfile`, copied once
+//! from the snap path when one exists ([`packaged_store_path`]). Live
 //! reload is the keyfile backend's own file monitor, which is what [`watch`]
 //! rides on; the tests below drive that same backend directly.
 //!
@@ -303,6 +306,20 @@ impl Store {
 /// thread that owns the store - for [`watch`], the watcher thread with its
 /// running loop.
 pub fn store_path() -> Option<PathBuf> {
+    if crate::distro_packaged()
+        && std::env::var_os("GSETTINGS_BACKEND").as_deref() != Some(std::ffi::OsStr::new("keyfile"))
+    {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let path = packaged_store_path(
+            std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+            home.clone(),
+        )?;
+        if let Some(home) = home {
+            static MIGRATE: std::sync::Once = std::sync::Once::new();
+            MIGRATE.call_once(|| migrate_store(&snap_store_path(&home), &path));
+        }
+        return Some(path);
+    }
     let config_dir = if std::env::var_os("GSETTINGS_BACKEND").as_deref()
         == Some(std::ffi::OsStr::new("keyfile"))
     {
@@ -319,6 +336,40 @@ pub fn store_path() -> Option<PathBuf> {
             .join(".config")
     };
     Some(config_dir.join("glib-2.0/settings/keyfile"))
+}
+
+/// A distribution package build's store: Myna's own directory under the
+/// user's config home, `$XDG_CONFIG_HOME/myna/glib-2.0/settings/keyfile`
+/// (`~/.config/myna/...` without it). Never the dconf database, and never a
+/// path under `~/snap`, which a host without snapd should not grow.
+pub fn packaged_store_path(
+    xdg_config_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let config = xdg_config_home
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.map(|home| home.join(".config")))?;
+    Some(config.join("myna/glib-2.0/settings/keyfile"))
+}
+
+/// Where a snap or an earlier build outside one kept the store.
+fn snap_store_path(home: &std::path::Path) -> PathBuf {
+    home.join("snap/myna/common/.config/glib-2.0/settings/keyfile")
+}
+
+/// Carry an existing store over the first time a packaged build looks:
+/// copied, never moved, and never over a store that already exists, so the
+/// snap keeps its own and a second run changes nothing.
+pub fn migrate_store(from: &std::path::Path, to: &std::path::Path) {
+    if to.exists() || !from.is_file() {
+        return;
+    }
+    if let Some(parent) = to.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let _ = std::fs::copy(from, to);
 }
 
 /// A live subscription to the store: every change re-reads the whole
@@ -432,6 +483,38 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn a_packaged_store_lives_under_the_config_home_not_snap() {
+        assert_eq!(
+            packaged_store_path(Some("/x/cfg".into()), Some("/home/u".into())),
+            Some(PathBuf::from("/x/cfg/myna/glib-2.0/settings/keyfile"))
+        );
+        assert_eq!(
+            packaged_store_path(Some("relative".into()), Some("/home/u".into())),
+            Some(PathBuf::from(
+                "/home/u/.config/myna/glib-2.0/settings/keyfile"
+            ))
+        );
+        assert_eq!(packaged_store_path(None, None), None);
+    }
+
+    #[test]
+    fn migration_copies_once_and_never_overwrites() {
+        let dir = std::env::temp_dir().join(format!("myna-store-migrate-{}", std::process::id()));
+        let (from, to) = (dir.join("old/keyfile"), dir.join("new/sub/keyfile"));
+        std::fs::create_dir_all(from.parent().unwrap()).unwrap();
+        std::fs::write(&from, "[a]\nb=1\n").unwrap();
+        migrate_store(&from, &to);
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "[a]\nb=1\n");
+        std::fs::write(&from, "changed").unwrap();
+        migrate_store(&from, &to);
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "[a]\nb=1\n");
+        assert!(from.exists(), "the old store is copied, not moved");
+        migrate_store(&dir.join("missing"), &dir.join("none/keyfile"));
+        assert!(!dir.join("none").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// The enum nicks in the schema. Kept next to their parser so the two
     /// cannot drift, and deliberately not derived from the serde names: the
