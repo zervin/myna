@@ -31,6 +31,7 @@ import os
 import shutil
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -70,18 +71,40 @@ def _sha256(path: Path) -> str:
 
 
 def _download(url: str, dest: Path) -> None:
-    """Resumable download (Range append) with progress on stderr."""
+    """Resumable download (Range append) with progress on stderr.
+
+    A server that ignores the Range and sends the whole file (200, not 206)
+    restarts the file rather than appending a second copy to it; one that
+    answers 416 has nothing past what is already here.
+    """
     have = dest.stat().st_size if dest.exists() else 0
     req = urllib.request.Request(url, headers={"Range": f"bytes={have}-"} if have else {})
-    with urllib.request.urlopen(req, timeout=60) as resp, dest.open("ab") as out:
-        while block := resp.read(1 << 20):
-            out.write(block)
-            print(
-                f"\r{dest.name}: {(have + out.tell()) / 1e6:.0f} MB",
-                end="",
-                file=sys.stderr,
-            )
+    try:
+        resp = urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as error:
+        if have and error.code == 416:
+            return
+        raise
+    with resp:
+        if have and resp.status != 206:
+            have = 0
+        with dest.open("ab" if have else "wb") as out:
+            while block := resp.read(1 << 20):
+                out.write(block)
+                print(
+                    f"\r{dest.name}: {(have + out.tell()) / 1e6:.0f} MB",
+                    end="",
+                    file=sys.stderr,
+                )
     print(file=sys.stderr)
+
+
+class ChecksumMismatch(RuntimeError):
+    """The pinned archive's hash did not match: retrying will not help."""
+
+
+#: Exit status for a hash mismatch, so a service can stop restarting on it.
+EXIT_CHECKSUM = 3
 
 
 def staged(out_dir: Path) -> bool:
@@ -103,17 +126,22 @@ def stage(out_dir: Path) -> Path:
     if staged(out_dir):
         return out_dir
     out_dir.parent.mkdir(parents=True, exist_ok=True)
+    # The archive downloads beside the model, not into a temporary directory,
+    # so an interrupted download resumes on the next start instead of
+    # starting over from nothing.
+    zip_path = out_dir.parent / f"{out_dir.name}.zip.part"
+    _download(URL, zip_path)
+    if (digest := _sha256(zip_path)) != SHA256:
+        zip_path.unlink()
+        raise ChecksumMismatch(f"sha256 mismatch: {digest} != {SHA256} (pinned {URL})")
     with tempfile.TemporaryDirectory(dir=out_dir.parent) as tmp:
-        zip_path = Path(tmp) / "model.zip"
-        _download(URL, zip_path)
-        if (digest := _sha256(zip_path)) != SHA256:
-            raise RuntimeError(f"sha256 mismatch: {digest} != {SHA256} (pinned {URL})")
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(tmp)
         extracted = Path(tmp) / "parakeet-tdt-0.6b-v3-int8"
         out_dir.mkdir(exist_ok=True)
         for name in MODEL_FILES:
             shutil.move(str(extracted / name), out_dir / name)
+    zip_path.unlink()
     (out_dir / STAMP_FILE).write_text(f"{STAMP}\n", encoding="utf-8")
     return out_dir
 
@@ -128,7 +156,11 @@ def main() -> int:
         "as --model to myna-server --adapter parakeet)",
     )
     args = parser.parse_args()
-    out_dir = stage(args.out_dir or default_model_dir())
+    try:
+        out_dir = stage(args.out_dir or default_model_dir())
+    except ChecksumMismatch as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_CHECKSUM
     total = sum((out_dir / f).stat().st_size for f in MODEL_FILES)
     print(f"parakeet int8 ONNX ready: {out_dir} ({total / 1e6:.0f} MB)")
     return 0
