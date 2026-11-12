@@ -1414,19 +1414,25 @@ impl BackendUi {
         });
         window.add_action(&refresh);
 
-        let setup = gio::SimpleAction::new("setup", None);
-        let gate = Rc::new(SetupGate::new(setup.clone()));
-        setup.connect_activate({
-            let ui = Rc::downgrade(self);
-            let window = window.downgrade();
-            let gate = gate.clone();
-            move |_, _| {
-                if let (Some(ui), Some(window)) = (ui.upgrade(), window.upgrade()) {
-                    ui.open_setup(&gate, &window);
+        // The wizard installs snaps; a host whose models are packages has
+        // nothing for it to do, so its menu item goes rather than greys.
+        if self.configurator.installs_models() {
+            let setup = gio::SimpleAction::new("setup", None);
+            let gate = Rc::new(SetupGate::new(setup.clone()));
+            setup.connect_activate({
+                let ui = Rc::downgrade(self);
+                let window = window.downgrade();
+                let gate = gate.clone();
+                move |_, _| {
+                    if let (Some(ui), Some(window)) = (ui.upgrade(), window.upgrade()) {
+                        ui.open_setup(&gate, &window);
+                    }
                 }
-            }
-        });
-        window.add_action(&setup);
+            });
+            window.add_action(&setup);
+        } else {
+            window.remove_menu_action("win.setup");
+        }
 
         let report_issue = gio::SimpleAction::new("report-issue", None);
         report_issue.connect_activate({
@@ -2242,6 +2248,8 @@ impl BackendUi {
             | OnboardingState::Unavailable => None,
         };
         let setup_group = widget.setup_group();
+        // Its button opens the wizard, which only a snap host has.
+        let missing = missing.filter(|_| self.configurator.installs_models());
         setup_group.set_visible(missing.is_some());
         if let Some(title) = missing {
             setup_group.set_title(&title);
@@ -2577,6 +2585,12 @@ fn failure_details(step: Option<&crate::ports::FailedStep>, message: &str) -> St
             out.push_str(&gettextrs::gettext("D-Bus call:"));
             out.push(' ');
             out.push_str(call);
+            out.push('\n');
+        }
+        Some(crate::ports::FailedStep::Unsupported { operation }) => {
+            out.push_str(&gettextrs::gettext("Not available here:"));
+            out.push(' ');
+            out.push_str(operation);
             out.push('\n');
         }
         Some(crate::ports::FailedStep::Setting { key }) => {

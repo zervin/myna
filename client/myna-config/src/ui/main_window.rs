@@ -1,5 +1,6 @@
 use adw::subclass::prelude::*;
 use glib::subclass::types::ObjectSubclassIsExt;
+use gtk::prelude::{Cast, CastNone, MenuModelExt, WidgetExt};
 use gtk::{gio, glib, CompositeTemplate};
 use gtk4 as gtk;
 use libadwaita as adw;
@@ -54,6 +55,24 @@ glib::wrapper! {
 }
 
 impl MainWindow {
+    /// Drop every main-menu item that activates `action`, and a section it
+    /// leaves empty.
+    pub fn remove_menu_action(&self, action: &str) {
+        let mut child = self.first_child();
+        let mut stack = Vec::new();
+        while let Some(widget) = child.take().or_else(|| stack.pop()) {
+            if let Some(button) = widget.downcast_ref::<gtk::MenuButton>() {
+                if let Some(menu) = button.menu_model().and_downcast::<gio::Menu>() {
+                    remove_action_items(&menu, action);
+                }
+            }
+            if let Some(next) = widget.next_sibling() {
+                stack.push(next);
+            }
+            child = widget.first_child();
+        }
+    }
+
     pub fn new(application: &adw::Application) -> Self {
         super::register_resources();
         glib::Object::builder()
@@ -83,5 +102,26 @@ impl MainWindow {
 
     pub fn view_switcher_bar(&self) -> adw::ViewSwitcherBar {
         self.imp().view_switcher_bar.get()
+    }
+}
+
+fn remove_action_items(menu: &gio::Menu, action: &str) {
+    for index in (0..menu.n_items()).rev() {
+        if let Some(section) = menu
+            .item_link(index, gio::MENU_LINK_SECTION)
+            .and_downcast::<gio::Menu>()
+        {
+            remove_action_items(&section, action);
+            if section.n_items() == 0 {
+                menu.remove(index);
+            }
+        } else if menu
+            .item_attribute_value(index, gio::MENU_ATTRIBUTE_ACTION, None)
+            .and_then(|value| value.get::<String>())
+            .as_deref()
+            == Some(action)
+        {
+            menu.remove(index);
+        }
     }
 }

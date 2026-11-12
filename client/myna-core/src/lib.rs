@@ -29,6 +29,17 @@ pub mod protocol;
 pub mod session;
 pub mod settings;
 
+/// How this build is packaged, fixed at build time by `MYNA_PACKAGING`:
+/// unset for the snaps and tree builds, `deb` for a distribution package
+/// build that runs without snapd.
+pub const PACKAGING: Option<&str> = option_env!("MYNA_PACKAGING");
+
+/// True for a distribution package build (`MYNA_PACKAGING=deb`): no snapd,
+/// models are packages, and settings live under the user's config directory.
+pub fn distro_packaged() -> bool {
+    PACKAGING == Some("deb")
+}
+
 pub use audio::{AudioFormat, PcmChunk};
 pub use capabilities::Capabilities;
 pub use capture::{

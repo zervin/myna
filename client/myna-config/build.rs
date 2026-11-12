@@ -25,6 +25,7 @@ const BLUEPRINTS: &[(&str, &str)] = &[
 
 fn main() {
     version::emit();
+    println!("cargo:rerun-if-env-changed=MYNA_ISSUE_URL");
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));

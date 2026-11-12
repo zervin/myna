@@ -1420,7 +1420,8 @@ fn build_window(application: &adw::Application) {
             crate::platform::Platform::current().components().as_ref(),
         )
         .await;
-        if needs_onboarding(&components) {
+        // The wizard installs snaps: a packaged build has none to install.
+        if needs_onboarding(&components) && !myna_core::distro_packaged() {
             crate::onboarding_ui::OnboardingUi::present(&application, components);
         } else {
             build_settings_window(&application);

@@ -12,6 +12,8 @@ The configuration UI is **event-driven**. A refresh cycle may spawn at most:
 | Report an Issue (n backends) | n * `BACKEND_REFRESH_PROCESS_BUDGET`: the report describes every backend, and the Diagnostics tab may never have read them |
 | Apply running              | `0`, plus one snapd socket read per `APPLY_PROGRESS_INTERVAL` (1 s) |
 
+A distribution package build (`MYNA_PACKAGING=deb`, `adapters/packaged.rs`) reads no snapd. Startup and focus read the model launchers in `/usr/libexec/myna` (no process) plus one `dpkg-query` per installed package for its version, the client and each model; Backend selected spawns one `systemctl --user is-active myna-server.service`. Both stay within the budgets above.
+
 Startup additionally pays one startup-sized assessment before any window
 exists, to decide between the settings window and the onboarding wizard
 (`docs/onboarding.md`). The result is handed to the wizard rather than
