@@ -7,7 +7,7 @@
 
 import System from 'system';
 
-import {OVERRIDE_ENV, SNAP_APP, SNAP_LAUNCHER, resolveHudLaunch} from '../resolve.js';
+import {OVERRIDE_ENV, PACKAGED_HUD, SNAP_APP, SNAP_LAUNCHER, resolveHudLaunch} from '../resolve.js';
 
 let failures = 0;
 
@@ -50,6 +50,25 @@ function fakes({env = {}, executable = []} = {}) {
     const snapAbs = resolveHudLaunch(fakes({executable: ['/usr/bin/snap']}));
     deepEq('XH2 snap resolved by absolute path too',
         snapAbs.argv, [SNAP_LAUNCHER, 'run', SNAP_APP]);
+}
+
+// --- A distro-packaged renderer (deb) in libexec -------------------------
+
+{
+    const deb = resolveHudLaunch(fakes({executable: [PACKAGED_HUD]}));
+    deepEq('the deb renderer launches directly', deb.argv, [PACKAGED_HUD]);
+    eq('reported as the packaged source', deb.source, 'packaged');
+
+    // snapd present but the deb installed: the deb wins, since `snap run`
+    // would fail when the myna snap itself was never installed.
+    const both = resolveHudLaunch(fakes({executable: [PACKAGED_HUD, SNAP_LAUNCHER]}));
+    deepEq('the deb renderer outranks a bare snap launcher', both.argv, [PACKAGED_HUD]);
+
+    const overDeb = resolveHudLaunch(fakes({
+        env: {[OVERRIDE_ENV]: '/home/dev/target/debug/myna-hud'},
+        executable: ['/home/dev/target/debug/myna-hud', PACKAGED_HUD],
+    }));
+    eq('the developer override outranks the deb', overDeb.source, 'override');
 }
 
 // --- XH2: the developer override outranks the packaged command -----------
