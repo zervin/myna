@@ -18,9 +18,11 @@
 //      `myna.hud` is the snap app name — `<snap>.<app>` — not a filesystem
 //      path.)
 //
-// There is deliberately no bare `/usr/bin/myna-hud` fallback: the renderer
-// ships in the snap, and a stray system binary would be an unconfined,
-// unversioned surprise rather than a supported install.
+//   3. `/usr/libexec/myna/myna-hud` — a distro-packaged renderer (a deb,
+//      not the snap). Checked before the snap: it exists only when that
+//      package was installed on purpose, while `snap` may be present on a
+//      host that never installed the myna snap. It lives in libexec, not on
+//      PATH, so a stray build on PATH is still never picked up.
 
 /** The environment variable that overrides the launch entirely — an
  * absolute path to a locally built renderer. */
@@ -29,6 +31,8 @@ export const OVERRIDE_ENV = 'MYNA_HUD_BINARY';
 /** The launcher used for the packaged renderer, and the snap app it runs. */
 export const SNAP_LAUNCHER = 'snap';
 export const SNAP_APP = 'myna.hud';
+/** The renderer a distro package (deb) installs. */
+export const PACKAGED_HUD = '/usr/libexec/myna/myna-hud';
 
 /**
  * Resolve the argv that launches the renderer.
@@ -40,7 +44,8 @@ export const SNAP_APP = 'myna.hud';
  *     `snap` itself is present (looked up on `PATH` by the caller's
  *     predicate, or as `/usr/bin/snap`).
  * @returns {{argv: (string[]|null), source: string}} the launch argv and
- *     where it came from (`'override'`, `'snap'`, or `'missing'`).
+ *     where it came from (`'override'`, `'packaged'`, `'snap'`, or
+ *     `'missing'`).
  *     `argv` is null only when nothing can be launched — the host then
  *     stays dormant and logs once, rather than throwing (XH2).
  */
@@ -55,6 +60,9 @@ export function resolveHudLaunch({getenv, isExecutable}) {
             ? {argv: [override], source: 'override'}
             : {argv: null, source: 'missing'};
     }
+    // A distro-packaged renderer, when that package is installed.
+    if (isExecutable(PACKAGED_HUD))
+        return {argv: [PACKAGED_HUD], source: 'packaged'};
     // The packaged path: `snap run myna.hud`. We can only confirm the
     // launcher exists, not stat the confined app — but if `snap` is present
     // the snap is the supported install, and `snap run` reports its own
