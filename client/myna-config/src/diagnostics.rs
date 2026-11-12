@@ -152,8 +152,13 @@ impl DiagnosticReport {
     }
 }
 
-/// The issue form `.github/ISSUE_TEMPLATE/report.yml` describes.
-const ISSUE_FORM: &str = "https://github.com/canonical/myna/issues/new?template=report.yml";
+/// The issue form `.github/ISSUE_TEMPLATE/report.yml` describes. A
+/// redistributor's build points it at its own tracker with `MYNA_ISSUE_URL`
+/// at build time, so its users' reports reach whoever built what they run.
+const ISSUE_FORM: &str = match option_env!("MYNA_ISSUE_URL") {
+    Some(url) => url,
+    None => "https://github.com/canonical/myna/issues/new?template=report.yml",
+};
 
 /// GitHub answers 414 to a URL much past 8 KB; this leaves it headroom.
 const ISSUE_URL_BUDGET: usize = 7_500;

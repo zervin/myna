@@ -206,6 +206,9 @@ pub enum FailedStep {
     /// A write to the user's GSettings, named as schema and key, such as
     /// `org.gnome.shell enabled-extensions`.
     Setting { key: String },
+    /// An operation this host does not offer, refused before anything ran,
+    /// such as installing a model where the package manager owns models.
+    Unsupported { operation: String },
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]

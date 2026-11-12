@@ -30,20 +30,19 @@ use myna_core::language::ModelFamily;
 
 /// Where model packages put their launchers.
 pub const PACKAGED_LIBEXEC: &str = "/usr/libexec/myna";
-/// The packaged client, which [`is_packaged_install`] looks for.
-pub const PACKAGED_CLIENT: &str = "/usr/bin/myna-desktop";
 const LAUNCHER_PREFIX: &str = "myna-server-";
 const CLIENT_UNIT: &str = "myna-desktop.service";
 const SERVER_UNIT: &str = "myna-server.service";
-/// Packages own model selection; this names it in every refusal.
 const PACKAGED_ENGINES: &str =
     r#"{"active-engine":"cpu","engines":[{"name":"cpu","compatible":true}]}"#;
+/// Packages own model selection; this names it in every refusal.
 const UNSUPPORTED: &str = "a packaged install changes models through the package manager";
 
-/// True when Myna was installed from packages and snapd is not running:
-/// the client binary is there and snapd's socket is not.
+/// True for a build made for distribution packages (`MYNA_PACKAGING=deb`
+/// at build time). Decided when building, not by probing: every Ubuntu has
+/// snapd's socket, and a deb install there still has no Myna snap.
 pub fn is_packaged_install() -> bool {
-    Path::new(PACKAGED_CLIENT).exists() && !Path::new("/run/snapd.socket").exists()
+    myna_core::distro_packaged()
 }
 
 /// The model families whose launcher is installed under `libexec`, sorted.
@@ -87,6 +86,27 @@ fn unit_state_request(unit: &str) -> CommandRequest {
     )
 }
 
+const CLIENT_PACKAGE: &str = "myna-desktop";
+
+/// A model family's package, named after its launcher.
+fn server_package(family: ModelFamily) -> String {
+    format!(
+        "myna-server-{}",
+        family.snap_name().trim_start_matches("myna-")
+    )
+}
+
+fn version_request(package: &str) -> CommandRequest {
+    CommandRequest::new(
+        "dpkg-query".to_owned(),
+        vec![
+            "--show".to_owned(),
+            "--showformat=${Version}".to_owned(),
+            package.to_owned(),
+        ],
+    )
+}
+
 fn restart_request() -> CommandRequest {
     CommandRequest::new(
         "systemctl".to_owned(),
@@ -127,6 +147,21 @@ impl PackagedBackendRepository {
         }
     }
 
+    /// The installed version of `package`, as dpkg records it; the package
+    /// name alone when dpkg cannot say, so a report never claims a version.
+    async fn package_version(&self, package: &str, cancellation: CancellationToken) -> String {
+        match self
+            .runner
+            .run(version_request(package), cancellation)
+            .await
+        {
+            Ok(output) if !output.stdout().trim().is_empty() => {
+                format!("{} (deb {package})", output.stdout().trim())
+            }
+            _ => format!("unknown (deb {package})"),
+        }
+    }
+
     fn snapshot(&self) -> ConnectionSnapshot {
         connection_snapshot(&installed_families(&self.libexec))
     }
@@ -139,18 +174,21 @@ impl BackendRepository for PackagedBackendRepository {
     /// installed.
     async fn installed_snaps(
         &self,
-        _cancellation: CancellationToken,
+        cancellation: CancellationToken,
     ) -> Result<Vec<InstalledSnap>, BackendSurfaceError> {
         let mut installed = vec![InstalledSnap {
             name: crate::onboarding::MYNA_SNAP.to_owned(),
-            version: "packaged".to_owned(),
+            version: self
+                .package_version(CLIENT_PACKAGE, cancellation.clone())
+                .await,
         }];
-        installed.extend(installed_families(&self.libexec).into_iter().map(|family| {
-            InstalledSnap {
+        for family in installed_families(&self.libexec) {
+            let package = server_package(family);
+            installed.push(InstalledSnap {
                 name: family.snap_name().to_owned(),
-                version: "packaged".to_owned(),
-            }
-        }));
+                version: self.package_version(&package, cancellation.clone()).await,
+            });
+        }
         Ok(installed)
     }
 
@@ -213,13 +251,11 @@ impl PackagedSystemConfigurator {
     }
 }
 
-fn unsupported() -> SystemConfiguratorError {
+/// A refusal names what was asked for and that nothing ran.
+fn unsupported(operation: &str) -> SystemConfiguratorError {
     SystemConfiguratorError::Execution {
-        step: crate::ports::FailedStep::Command {
-            executable: "apt".to_owned(),
-            arguments: Vec::new(),
-            exit_status: None,
-            stderr: String::new(),
+        step: crate::ports::FailedStep::Unsupported {
+            operation: operation.to_owned(),
         },
         message: UNSUPPORTED.to_owned(),
     }
@@ -236,7 +272,10 @@ impl SystemConfigurator for PackagedSystemConfigurator {
         _plan: &SwitchPlan,
         _cancellation: CancellationToken,
     ) -> Result<Vec<CommandResult>, SystemConfiguratorFailure> {
-        Err(SystemConfiguratorFailure::new(Vec::new(), unsupported()))
+        Err(SystemConfiguratorFailure::new(
+            Vec::new(),
+            unsupported("switch models"),
+        ))
     }
 
     async fn restart_myna(
@@ -277,7 +316,10 @@ impl SystemConfigurator for PackagedSystemConfigurator {
         _preview: &ApplyPreview,
         _cancellation: CancellationToken,
     ) -> Result<Vec<CommandResult>, SystemConfiguratorFailure> {
-        Err(SystemConfiguratorFailure::new(Vec::new(), unsupported()))
+        Err(SystemConfiguratorFailure::new(
+            Vec::new(),
+            unsupported("configure a model"),
+        ))
     }
 
     async fn changes_in_progress(
@@ -297,7 +339,7 @@ impl SystemConfigurator for PackagedSystemConfigurator {
         _plan: &SetUpPlan,
         _cancellation: CancellationToken,
     ) -> Result<(), SystemConfiguratorError> {
-        Err(unsupported())
+        Err(unsupported("set up snaps"))
     }
 
     async fn install_snap(
@@ -305,7 +347,7 @@ impl SystemConfigurator for PackagedSystemConfigurator {
         _snap: &str,
         _cancellation: CancellationToken,
     ) -> Result<Option<String>, SystemConfiguratorError> {
-        Err(unsupported())
+        Err(unsupported("install a model snap"))
     }
 
     async fn snap_change(
@@ -405,6 +447,127 @@ mod tests {
         let configurator =
             PackagedSystemConfigurator::new(Arc::new(crate::command::GioCommandRunner));
         assert!(!configurator.installs_models());
+    }
+
+    fn ok(stdout: &str) -> Result<crate::command::CommandOutput, CommandError> {
+        Ok(crate::command::CommandOutput::new(Some(0), stdout, ""))
+    }
+
+    fn libexec_with(names: &[&str]) -> PathBuf {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("myna-libexec-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in names {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn installed_packages_report_their_dpkg_versions() {
+        let dir = libexec_with(&["myna-server-parakeet"]);
+        let runner = crate::command::FakeCommandRunner::scripted([ok("1.2-3"), ok("4.5-6")]);
+        let repository = PackagedBackendRepository::with_libexec(Arc::new(runner.clone()), &dir);
+        let installed = gtk4::glib::MainContext::new()
+            .block_on(repository.installed_snaps(CancellationToken::new()))
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let versions: Vec<_> = installed
+            .iter()
+            .map(|s| (s.name.as_str(), s.version.as_str()))
+            .collect();
+        assert_eq!(
+            versions,
+            [
+                ("myna", "1.2-3 (deb myna-desktop)"),
+                ("myna-parakeet", "4.5-6 (deb myna-server-parakeet)")
+            ]
+        );
+        assert_eq!(
+            runner.calls()[1].arguments().last().map(String::as_str),
+            Some("myna-server-parakeet")
+        );
+    }
+
+    #[test]
+    fn an_unknown_version_never_reads_as_one() {
+        let dir = libexec_with(&[]);
+        let runner = crate::command::FakeCommandRunner::scripted([Err(CommandError::NonZero {
+            exit_status: Some(1),
+            stdout: String::new(),
+            stderr: "no packages found".into(),
+        })]);
+        let repository = PackagedBackendRepository::with_libexec(Arc::new(runner), &dir);
+        let installed = gtk4::glib::MainContext::new()
+            .block_on(repository.installed_snaps(CancellationToken::new()))
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(installed[0].version, "unknown (deb myna-desktop)");
+    }
+
+    #[test]
+    fn the_server_unit_state_is_the_model_status() {
+        let runner = crate::command::FakeCommandRunner::scripted([Err(CommandError::NonZero {
+            exit_status: Some(3),
+            stdout: "failed\n".into(),
+            stderr: String::new(),
+        })]);
+        let repository =
+            PackagedBackendRepository::with_libexec(Arc::new(runner.clone()), "/nonexistent");
+        let snapshot = gtk4::glib::MainContext::new().block_on(
+            repository.read_snapshot(&identity(ModelFamily::Parakeet), CancellationToken::new()),
+        );
+        let service = &snapshot.status().unwrap().services()[0];
+        assert_eq!(service.name(), "server");
+        assert_eq!(service.state(), &crate::domain::ServiceState::Failed);
+        assert_eq!(
+            runner.calls()[0].arguments(),
+            ["--user", "is-active", "myna-server.service"]
+        );
+    }
+
+    #[test]
+    fn a_failed_restart_reports_the_command_that_failed() {
+        let runner = crate::command::FakeCommandRunner::scripted([Err(CommandError::NonZero {
+            exit_status: Some(5),
+            stdout: String::new(),
+            stderr: "Unit myna-desktop.service not found.".into(),
+        })]);
+        let configurator = PackagedSystemConfigurator::new(Arc::new(runner));
+        let error = gtk4::glib::MainContext::new()
+            .block_on(configurator.restart_myna(CancellationToken::new()))
+            .unwrap_err();
+        match error {
+            SystemConfiguratorError::Execution {
+                step:
+                    crate::ports::FailedStep::Command {
+                        executable,
+                        exit_status,
+                        ..
+                    },
+                message,
+            } => {
+                assert_eq!(executable, "systemctl");
+                assert_eq!(exit_status, Some(5));
+                assert_eq!(message, "Unit myna-desktop.service not found.");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refusals_name_the_operation_and_that_nothing_ran() {
+        let configurator =
+            PackagedSystemConfigurator::new(Arc::new(crate::command::FakeCommandRunner::default()));
+        let error = gtk4::glib::MainContext::new()
+            .block_on(configurator.install_snap("myna-whisper", CancellationToken::new()))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SystemConfiguratorError::Execution { step: crate::ports::FailedStep::Unsupported { ref operation }, .. }
+                if operation == "install a model snap"
+        ));
     }
 
     #[test]
