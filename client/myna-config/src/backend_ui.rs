@@ -18,8 +18,6 @@ use libadwaita::prelude::*;
 use crate::active_backend::{
     execute_switch, ActiveBackendController, PrepareSwitchError, SwitchNotice, SwitchOutcome,
 };
-#[cfg(test)]
-use crate::adapters::system_configurator::PkexecSystemConfigurator;
 use crate::backend_apply::{
     execute_backend_apply, prepare_change, ApplyFailure, ApplyPreview, ApplySuccess,
     PrepareApplyError, ValidationIssue,
@@ -808,8 +806,10 @@ impl BackendUi {
                 .and_then(|found| found.better)
                 .filter(|_| installs),
         );
-        let selectable = backends.len() > 1
-            || !matches!(snapshot.active_state(), ActiveBackendState::Connected(_));
+        // Only a host that can switch models offers a choice of them.
+        let selectable = installs
+            && (backends.len() > 1
+                || !matches!(snapshot.active_state(), ActiveBackendState::Connected(_)));
         let (listed, listed_selectable) = {
             let rows = self.model_rows.borrow();
             (
@@ -3527,6 +3527,7 @@ fn host_facts() -> HostFacts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::system_configurator::PkexecSystemConfigurator;
     use std::sync::Arc;
 
     #[test]
@@ -3928,6 +3929,35 @@ mod tests {
                     None,
                 )]
             );
+        });
+    }
+
+    fn packaged_general_ui(connections: Wiring) -> Rc<BackendUi> {
+        ui::register_resources();
+        let TestUi { ui, .. } = test_ui_ports(
+            discovered(connections),
+            Some(ui::MynaPage::new()),
+            Vec::new(),
+            Rc::new(crate::adapters::packaged::PackagedSystemConfigurator::new(
+                Arc::new(GioCommandRunner),
+            )),
+        );
+        ui.sync_active_backend();
+        ui
+    }
+
+    #[test]
+    fn a_packaged_host_lists_its_models_without_radios() {
+        on_gtk_thread(|| {
+            for wiring in [PARAKEET_CONNECTED_WHISPER_INSTALLED, PARAKEET_DISCONNECTED] {
+                let ui = packaged_general_ui(wiring);
+                assert!(
+                    listed_models(&ui)
+                        .iter()
+                        .all(|(_, _, radio)| radio.is_none()),
+                    "the package manager swaps models, so Settings offers no choice"
+                );
+            }
         });
     }
 
