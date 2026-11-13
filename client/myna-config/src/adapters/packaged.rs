@@ -3,8 +3,11 @@
 //! A packaged install has no snapd: the client is `/usr/bin/myna-desktop`
 //! under the `myna-desktop` user unit, and each model is a package that ships
 //! a launcher `/usr/libexec/myna/myna-server-<family>` started by the
-//! `myna-server` user unit. Nothing here installs, switches or configures a
-//! model; the package manager owns that. These adapters report what is
+//! `myna-server` user unit, and may declare the engine it runs in
+//! `/usr/share/myna/engines/<family>.json` (`modelctl engines`' format).
+//! Model packages conflict with each other, so the package manager swaps
+//! one for another. Nothing here installs, switches or configures a model;
+//! the package manager owns that. These adapters report what is
 //! installed so Settings opens on its settings pages, and restart the
 //! client's user unit.
 
@@ -33,8 +36,8 @@ pub const PACKAGED_LIBEXEC: &str = "/usr/libexec/myna";
 const LAUNCHER_PREFIX: &str = "myna-server-";
 const CLIENT_UNIT: &str = "myna-desktop.service";
 const SERVER_UNIT: &str = "myna-server.service";
-const PACKAGED_ENGINES: &str =
-    r#"{"active-engine":"cpu","engines":[{"name":"cpu","compatible":true}]}"#;
+/// Where model packages declare the engine they run on.
+pub const PACKAGED_ENGINES: &str = "/usr/share/myna/engines";
 /// Packages own model selection; this names it in every refusal.
 const UNSUPPORTED: &str = "a packaged install changes models through the package manager";
 
@@ -46,7 +49,10 @@ pub fn is_packaged_install() -> bool {
 }
 
 /// The model families whose launcher is installed under `libexec`, sorted.
+/// A launcher counts only as an executable file: a leftover with its mode
+/// stripped, or a directory, is not a model that can run.
 pub fn installed_families(libexec: &Path) -> Vec<ModelFamily> {
+    use std::os::unix::fs::PermissionsExt;
     let mut families: Vec<ModelFamily> = std::fs::read_dir(libexec)
         .into_iter()
         .flatten()
@@ -54,6 +60,8 @@ pub fn installed_families(libexec: &Path) -> Vec<ModelFamily> {
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
             let family = name.strip_prefix(LAUNCHER_PREFIX)?;
+            let metadata = std::fs::metadata(entry.path()).ok()?;
+            (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some(())?;
             ModelFamily::from_snap_name(&format!("myna-{family}"))
         })
         .collect();
@@ -88,12 +96,21 @@ fn unit_state_request(unit: &str) -> CommandRequest {
 
 const CLIENT_PACKAGE: &str = "myna-desktop";
 
+/// A family's short name, as its launcher, package and engine file use it.
+fn family_name(family: ModelFamily) -> &'static str {
+    family.snap_name().trim_start_matches("myna-")
+}
+
 /// A model family's package, named after its launcher.
 fn server_package(family: ModelFamily) -> String {
-    format!(
-        "myna-server-{}",
-        family.snap_name().trim_start_matches("myna-")
-    )
+    format!("myna-server-{}", family_name(family))
+}
+
+/// The engines a model package declares, if it declares any it can parse.
+fn declared_engines(dir: &Path, backend: &BackendIdentity) -> Option<crate::domain::EngineOptions> {
+    let family = ModelFamily::from_snap_name(backend.snap_name())?;
+    let text = std::fs::read_to_string(dir.join(format!("{}.json", family_name(family)))).ok()?;
+    parse_engine_options(&text).ok()
 }
 
 fn version_request(package: &str) -> CommandRequest {
@@ -133,6 +150,7 @@ fn unit_state(result: Result<String, CommandError>) -> Option<String> {
 pub struct PackagedBackendRepository {
     runner: Arc<dyn CommandRunner>,
     libexec: PathBuf,
+    engines: PathBuf,
 }
 
 impl PackagedBackendRepository {
@@ -141,9 +159,18 @@ impl PackagedBackendRepository {
     }
 
     pub fn with_libexec(runner: Arc<dyn CommandRunner>, libexec: impl Into<PathBuf>) -> Self {
+        Self::with_paths(runner, libexec, PACKAGED_ENGINES)
+    }
+
+    pub fn with_paths(
+        runner: Arc<dyn CommandRunner>,
+        libexec: impl Into<PathBuf>,
+        engines: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             runner,
             libexec: libexec.into(),
+            engines: engines.into(),
         }
     }
 
@@ -199,8 +226,8 @@ impl BackendRepository for PackagedBackendRepository {
         Ok(self.snapshot())
     }
 
-    /// The server unit's state is the model's only status; packages expose
-    /// no model, engine or configuration surface.
+    /// The server unit's state is the model's status and the package's
+    /// declaration its engine; packages expose no configuration surface.
     async fn read_snapshot(
         &self,
         backend: &BackendIdentity,
@@ -219,8 +246,9 @@ impl BackendRepository for PackagedBackendRepository {
         }) {
             Some(Ok(status)) => {
                 snapshot.set_status(status);
-                // Packaged models run on the CPU, the one engine they ship.
-                if let Ok(engines) = parse_engine_options(PACKAGED_ENGINES) {
+                // The package's own declaration; none leaves the engine unset
+                // rather than guessing one.
+                if let Some(engines) = declared_engines(&self.engines, backend) {
                     snapshot.set_engines(engines);
                 }
             }
@@ -393,8 +421,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("myna-packaged-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for name in ["myna-server-parakeet", "myna-hud", "myna-server-nope"] {
-            std::fs::write(dir.join(name), "").unwrap();
+            write_executable(&dir.join(name));
         }
+        // A model whose launcher is not executable, and one that is a directory.
+        std::fs::write(dir.join("myna-server-whisper"), "").unwrap();
+        std::fs::create_dir_all(dir.join("myna-server-funasr")).unwrap();
         let found = installed_families(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(found, vec![ModelFamily::Parakeet]);
@@ -436,10 +467,44 @@ mod tests {
         assert_eq!(unit_state(Err(CommandError::Cancelled)), None);
     }
 
+    fn write_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, "").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn active_snapshot(engines: &Path) -> BackendSnapshot {
+        let runner = crate::command::FakeCommandRunner::scripted([ok("active\n")]);
+        let repository =
+            PackagedBackendRepository::with_paths(Arc::new(runner), "/nonexistent", engines);
+        gtk4::glib::MainContext::new().block_on(
+            repository.read_snapshot(&identity(ModelFamily::Parakeet), CancellationToken::new()),
+        )
+    }
+
     #[test]
-    fn packaged_models_report_the_cpu_engine_in_use() {
-        let engines = parse_engine_options(PACKAGED_ENGINES).unwrap();
-        assert_eq!(engines.active(), Some("cpu"));
+    fn a_model_package_declares_its_engine() {
+        let dir = libexec_with(&[]);
+        std::fs::write(
+            dir.join("parakeet.json"),
+            r#"{"active-engine":"vulkan","engines":[{"name":"vulkan","compatible":true}]}"#,
+        )
+        .unwrap();
+        let snapshot = active_snapshot(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(snapshot.engines().unwrap().active(), Some("vulkan"));
+    }
+
+    #[test]
+    fn an_undeclared_or_unreadable_engine_is_left_unset() {
+        assert!(active_snapshot(Path::new("/nonexistent"))
+            .engines()
+            .is_none());
+        let dir = libexec_with(&[]);
+        std::fs::write(dir.join("parakeet.json"), "not json").unwrap();
+        let snapshot = active_snapshot(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(snapshot.engines().is_none());
     }
 
     #[test]
@@ -459,7 +524,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("myna-libexec-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for name in names {
-            std::fs::write(dir.join(name), "").unwrap();
+            write_executable(&dir.join(name));
         }
         dir
     }

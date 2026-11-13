@@ -63,8 +63,9 @@ pub trait SystemConfigurator {
         cancellation: CancellationToken,
     ) -> Result<Vec<CommandResult>, SystemConfiguratorFailure>;
 
-    /// Whether this host installs models from Settings. A packaged install
-    /// leaves that to the package manager, so Install more models hides.
+    /// Whether Settings installs and switches models on this host. A
+    /// packaged install leaves both to the package manager, so Install more
+    /// models hides and every model is a plain row with no radio.
     fn installs_models(&self) -> bool {
         true
     }
