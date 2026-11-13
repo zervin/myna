@@ -11,18 +11,17 @@
 //      build tree's binary (`…/target/debug/myna-hud`); when set and
 //      executable it wins over everything, so a packaged snap can never
 //      shadow the build under test.
-//   2. `snap run myna.hud` — the packaged command (R27/FR-027). The snap
+//   2. `/usr/libexec/myna/myna-hud` — a distro-packaged renderer (a deb,
+//      not the snap). Checked before the snap because it exists only when that
+//      package was installed on purpose, while `snap` may be present on a
+//      host that never installed the myna snap. It lives in libexec, not on
+//      PATH, so a stray build on PATH is still never picked up.
+//   3. `snap run myna.hud` — the packaged command (R27/FR-027). The snap
 //      exposes the renderer as the app `myna.hud`; it is launched THROUGH
 //      `snap run`, not by exec'ing a path, so snap-confine sets up the
 //      sandbox and passes the Wayland socket the child needs. (The dotted
 //      `myna.hud` is the snap app name — `<snap>.<app>` — not a filesystem
 //      path.)
-//
-//   3. `/usr/libexec/myna/myna-hud` — a distro-packaged renderer (a deb,
-//      not the snap). Checked before the snap: it exists only when that
-//      package was installed on purpose, while `snap` may be present on a
-//      host that never installed the myna snap. It lives in libexec, not on
-//      PATH, so a stray build on PATH is still never picked up.
 
 /** The environment variable that overrides the launch entirely — an
  * absolute path to a locally built renderer. */
