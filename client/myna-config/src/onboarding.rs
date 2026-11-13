@@ -491,6 +491,17 @@ pub fn needs_onboarding(components: &[Component]) -> bool {
     components.iter().any(Component::blocks)
 }
 
+/// Whether to open the wizard at startup on a host that does or does not
+/// install snaps. Where the package manager owns Myna and its model, only a
+/// desktop piece the wizard can set up (the input method, the indicator's
+/// host) opens it; a missing model is the package manager's to fix.
+pub fn opens_wizard(components: &[Component], installs_snaps: bool) -> bool {
+    components
+        .iter()
+        .filter(|component| installs_snaps || component.id.is_desktop())
+        .any(Component::blocks)
+}
+
 /// Whether an input method in this state holds the wizard and keeps
 /// Diagnostics from reading ready: nothing can be typed through it.
 pub fn input_method_holds(status: ComponentStatus) -> bool {
@@ -724,6 +735,25 @@ mod tests {
             status_surface: extension,
             ..ready()
         })
+    }
+
+    #[test]
+    fn a_packaged_host_opens_the_wizard_only_for_desktop_pieces() {
+        let missing_model = assess(Machine {
+            backend_discovered: false,
+            ..ready()
+        });
+        assert!(opens_wizard(&missing_model, true));
+        assert!(!opens_wizard(&missing_model, false), "apt installs models");
+        let missing_ibus = assess(Machine {
+            input_method: Some(ComponentStatus::Inactive),
+            ..ready()
+        });
+        assert!(needs_onboarding(&missing_ibus));
+        assert!(
+            opens_wizard(&missing_ibus, false),
+            "IBus is the wizard's to set up"
+        );
     }
 
     #[test]

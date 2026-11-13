@@ -15,7 +15,7 @@ use crate::myna_settings::{
     choice_display_label, widget_plan, DebouncedTextCommit, MynaSettingsController, PageState,
     PersistenceRequest, PersistenceWriter, Placement, SettingRow, SettingsEvent, WidgetKind,
 };
-use crate::onboarding::needs_onboarding;
+use crate::onboarding::opens_wizard;
 use crate::ports::{ClientSettings, ClientSettingsError};
 use crate::ui;
 use crate::APP_ID;
@@ -1420,8 +1420,9 @@ fn build_window(application: &adw::Application) {
             crate::platform::Platform::current().components().as_ref(),
         )
         .await;
-        // The wizard installs snaps: a packaged build has none to install.
-        if needs_onboarding(&components) && !myna_core::distro_packaged() {
+        // A packaged host leaves Myna and its model to the package manager,
+        // so only a desktop piece (IBus on Xfce or Plasma) opens the wizard.
+        if opens_wizard(&components, configurator.installs_models()) {
             crate::onboarding_ui::OnboardingUi::present(&application, components);
         } else {
             build_settings_window(&application);
