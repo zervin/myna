@@ -1398,7 +1398,7 @@ fn stage_log(stage: &SetupStage) -> String {
             format!("waiting for snapd: {summary}")
         }
         SetupStage::Connecting(snap) => format!("connecting myna:backend to {snap}"),
-        SetupStage::Restarting => "restarting snap.myna.myna.service".to_owned(),
+        SetupStage::Restarting => "restarting Myna".to_owned(),
     }
 }
 
